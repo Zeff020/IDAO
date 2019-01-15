@@ -8,6 +8,6 @@ The current plan is to make a simple ML algorithm to test how well we can do in 
 
 # Links
 
-Online portal with all information from the organisers (datasets, example solutions, etc...): https://official.contest.yandex.ru/contest/10569/enter/
+Online portal with all information from the organisers (datasets, example solutions, etc...)(change the language on the display of the website by clicking the flag on the top right): https://official.contest.yandex.ru/contest/10569/enter/
 
 Introductory code to keras repo: https://github.com/yandexdataschool/mlhep2018/blob/master/day2-Tue/seminar-01-manual/backprop_solution.ipynb
