@@ -1,7 +1,6 @@
 # IDAO
 Here we can share files and work on the machine learning algorithm for the International Data Analysis Olympiad.
 
-
 # Plan
 
 The current plan is to make a simple ML algorithm to test how well we can do in the rankings (displayed on IDAO link provided below) without making too much effort. After this, there are multiple tracks to pursue. One of which would be using the kinks in the tracks particles make to identify muons and other particles.
@@ -14,4 +13,10 @@ Online portal with all information from the organisers (datasets, example soluti
 
 -Password: In the slack channel
 
-Introductory code to keras repo: https://github.com/yandexdataschool/mlhep2018/blob/master/day2-Tue/seminar-01-manual/backprop_solution.ipynb
+
+Introductory code to keras, repo: https://github.com/yandexdataschool/mlhep2018/blob/master/day2-Tue/seminar-01-manual/backprop_solution.ipynb
+
+
+Kaggle has interesting resources of people that did similar things to what we are trying to achieve: https://www.kaggle.com/c/trackml-particle-identification/kernels
+
+
