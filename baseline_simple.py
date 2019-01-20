@@ -35,7 +35,7 @@ model.fit(train_part.loc[:, utils.SIMPLE_FEATURE_COLUMNS].values,
 validation_predictions = model.predict_proba(validation.loc[:, utils.SIMPLE_FEATURE_COLUMNS].values)[:, 1]
 
 # test the Yandex-defined scoring performance
-result = scoring.rejection90(validation.label.values, validation_predictions, sample_weight=relu(validation.weight.values))
+result = scoring.rejection90(validation.label.values, validation_predictions, sample_weight=validation.weight.values)
 print(result)
 
 # now train on whole training set, for optimal learning
