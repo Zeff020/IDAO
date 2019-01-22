@@ -7,7 +7,7 @@ Online portal with all information from the organisers (datasets, example soluti
 
 -Username: IDAO2019Team544
 
--Password: In the slack channel
+-Password: Pinned in the slack channel
 
 
 Introductory code to keras, repo: https://github.com/yandexdataschool/mlhep2018/blob/master/day2-Tue/seminar-01-manual/backprop_solution.ipynb
