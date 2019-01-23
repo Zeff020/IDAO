@@ -71,3 +71,28 @@ def make_smaller(train,test,smaller_by):
        # Saving the smaller test and train sets
        train_small.to_csv(r"./data" + r"/train_smaller" + str(smaller_by) + ".csv.gz", compression = 'gzip')
        test_small.to_csv(r"./data" + r"/test_smaller" + str(smaller_by) + ".csv.gz", compression = 'gzip')
+
+# I put train as the input for now as I've been using this to test the function but it should of course also work on test data
+def extract_best_fit_lines(train):
+    Location_info = train.loc[: , "MatchedHit_X[0]":"MatchedHit_Z[3]"]
+    
+    for i in range(0,train.shape[0]-1):
+    
+        # Extracting info on the i-th particle's coordinates
+        Particle_Path_Points = Location_info.loc[i,:]
+        X = Particle_Path_Points.loc['MatchedHit_X[0]':'MatchedHit_X[3]'].values
+        Y = Particle_Path_Points.loc['MatchedHit_Y[0]':'MatchedHit_Y[3]'].values
+        Z = Particle_Path_Points.loc['MatchedHit_Z[0]':'MatchedHit_Z[3]'].values
+    
+        data = np.concatenate((X[:, np.newaxis], 
+                       Y[:, np.newaxis], 
+                       Z[:, np.newaxis]), 
+                      axis=1)
+
+        datamean = data.mean(axis=0)
+    
+        # uu, dd and vv contain information on the fit. In fact, vv[0] contains the direction of the best fit (least squares)
+        uu, dd, vv = np.linalg.svd(data - datamean)
+        
+    
+    
