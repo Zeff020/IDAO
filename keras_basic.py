@@ -13,8 +13,7 @@ def relu(x):
 
 DATA_PATH = "./data"
 
-train, test = utils.load_small_data_csv(
-    DATA_PATH, "train_small.csv", "test_small.csv", utils.SIMPLE_FEATURE_COLUMNS)
+train, test = utils.load_data_csv(DATA_PATH, utils.SIMPLE_FEATURE_COLUMNS)
 
 
 train_part, val_part = train_test_split(train, test_size=0.20, shuffle=True)
