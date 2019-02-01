@@ -2,6 +2,7 @@ import os
 from itertools import repeat
 import numpy as np
 import pandas as pd
+from mathutils.geometry import intersect_point_line
 
 
 # Columns common between both training and test datasets
@@ -61,7 +62,7 @@ def load_small_data_csv(path, train_filename, test_filename, feature_columns):
         pass
     
     return train, test
-
+    
 # Makes dataframes smaller and saves them as csv as the original dataframes can be a bit hard to deal with
 def make_smaller(train,test,smaller_by):
        Height = train.shape[0] # Height is the number of columns in the dataframe
@@ -72,11 +73,15 @@ def make_smaller(train,test,smaller_by):
        train_small.to_csv(r"./data" + r"/train_smaller" + str(smaller_by) + ".csv.gz", compression = 'gzip')
        test_small.to_csv(r"./data" + r"/test_smaller" + str(smaller_by) + ".csv.gz", compression = 'gzip')
 
-# I put train as the input for now as I've been using this to test the function but it should of course also work on test data
-def extract_best_fit_lines(train):
-    Location_info = train.loc[: , "MatchedHit_X[0]":"MatchedHit_Z[3]"]
+# Returns array of summed residuals per particle (i-th entry in array correlates to i-th particle in dataframe). Currently only does for train.
+def kink_by_residuals(DataSet):
+    Location_info = DataSet.loc[: , "MatchedHit_X[0]":"MatchedHit_Z[3]"]
+
+    PointResiduals = np.array([])
+
+    for i in range(0,DataSet.shape[0]):
     
-    for i in range(0,train.shape[0]-1):
+        ResidualsSize = 0
     
         # Extracting info on the i-th particle's coordinates
         Particle_Path_Points = Location_info.loc[i,:]
@@ -85,14 +90,26 @@ def extract_best_fit_lines(train):
         Z = Particle_Path_Points.loc['MatchedHit_Z[0]':'MatchedHit_Z[3]'].values
     
         data = np.concatenate((X[:, np.newaxis], 
-                       Y[:, np.newaxis], 
-                       Z[:, np.newaxis]), 
-                      axis=1)
+                            Y[:, np.newaxis], 
+                            Z[:, np.newaxis]), 
+                            axis=1)
 
         datamean = data.mean(axis=0)
     
         # uu, dd and vv contain information on the fit. In fact, vv[0] contains the direction of the best fit (least squares)
         uu, dd, vv = np.linalg.svd(data - datamean)
-        
     
+        # Best fit line with length between -2500 and 2500 with 2 datapoints (it's a straight line so that's enough)
+        linepts = vv[0] * np.mgrid[-2500:2500:2j][:, np.newaxis]
+
+        # Shift by the mean to get the line in the right place (centered)
+        linepts += datamean
     
+        # Do a little loop where we add the residuals of all four of the points
+        for j in range (0,3):
+            intersect = intersect_point_line(data[j], linepts[0], linepts[1])
+            ResidualsSize += abs(sum(data[j] - intersect[0]))
+    
+        PointResiduals = np.append(PointResiduals, ResidualsSize)
+
+    return PointResiduals
