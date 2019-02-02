@@ -7,13 +7,18 @@ from sklearn.model_selection import train_test_split
 import pandas as pd
 import utils
 import scoring
+import numpy as np
 
 def relu(x):
   return np.array([ (i>0) * abs(i) for i in x ])
 
-DATA_PATH = "./data"
+DATA_PATH = "./IDAO/data/"
 
-train, test = utils.load_data_csv(DATA_PATH, utils.SIMPLE_FEATURE_COLUMNS)
+train, test = utils.load_small_data_csv(DATA_PATH,"train_smaller100.csv.gz" , "test_smaller100.csv.gz", utils.SIMPLE_FEATURE_COLUMNS)
+
+# Adding the kink feature
+PointResiduals = utils.kink_by_residuals(train)
+train['PointResiduals'] = pd.Series(PointResiduals, index=train.index)
 
 
 train_part, val_part = train_test_split(train, test_size=0.20, shuffle=True)

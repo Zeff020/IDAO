@@ -12,14 +12,10 @@ def relu(x):
   return np.array([ (i>0) * abs(i) for i in x ])
 
 
-DATA_PATH = "./data"
+DATA_PATH = "./IDAO/data/"
 
 train, test = utils.load_small_data_csv(
-    DATA_PATH, "train_small.csv", "test_small.csv", utils.SIMPLE_FEATURE_COLUMNS)
-
-print(train.head())
-print(test.head())
-
+    DATA_PATH, "train_smaller100.csv.gz", "test_smaller100.csv.gz", utils.SIMPLE_FEATURE_COLUMNS)
 
 # first train on part of the training sample, and use a subset to validate
 train_part, validation = train_test_split(train, test_size=0.25, shuffle=True)

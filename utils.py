@@ -106,7 +106,7 @@ def kink_by_residuals(DataSet):
         linepts += datamean
     
         # Do a little loop where we add the residuals of all four of the points
-        for j in range (0,3):
+        for j in range (0,4):
             intersect = intersect_point_line(data[j], linepts[0], linepts[1])
             ResidualsSize += abs(sum(data[j] - intersect[0]))
     
