@@ -74,10 +74,11 @@ def make_smaller(train,test,smaller_by):
        test_small.to_csv(r"./data" + r"/test_smaller" + str(smaller_by) + ".csv.gz", compression = 'gzip')
 
 # Returns array of summed residuals per particle (i-th entry in array correlates to i-th particle in dataframe). Currently only does for train.
-def kink_by_residuals(DataSet):
+def kink(DataSet):
     Location_info = DataSet.loc[: , "MatchedHit_X[0]":"MatchedHit_Z[3]"]
 
     PointResiduals = np.array([])
+    Angles = np.array([])
 
     for i in range(0,DataSet.shape[0]):
     
@@ -112,4 +113,21 @@ def kink_by_residuals(DataSet):
     
         PointResiduals = np.append(PointResiduals, ResidualsSize)
 
-    return PointResiduals
+        # Singular value decomposition on first line to get its derivative (angle)
+        DataFirstTwo = data[0:2,:]
+        datamean = DataFirstTwo.mean(axis=0)
+        uu, dd, vv = np.linalg.svd(DataFirstTwo - datamean)
+        FirstLineAngle = vv[0]
+        
+        
+        # Singular value decomposition on second line to get its derivative (angle)
+        DataSecondTwo = data[2:4,:]    
+        datamean = DataSecondTwo.mean(axis=0)
+        uu, dd, vv = np.linalg.svd(DataSecondTwo - datamean)
+        SecondLineAngle = vv[0]
+        
+        # Finding the angle between the vectors made up by the first and second line. Simply dot product as both lines are normalized (norm=1 for both)
+        Angle = np.dot(FirstLineAngle,SecondLineAngle)
+        Angles = np.append(Angles, Angle)
+    
+    return PointResiduals, Angles

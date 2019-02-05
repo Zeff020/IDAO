@@ -1,4 +1,3 @@
-
 import tensorflow as tf
 import keras
 from keras import backend as K
@@ -16,9 +15,10 @@ DATA_PATH = "./IDAO/data/"
 
 train, test = utils.load_small_data_csv(DATA_PATH,"train_smaller100.csv.gz" , "test_smaller100.csv.gz", utils.SIMPLE_FEATURE_COLUMNS)
 
-# Adding the kink feature
-PointResiduals = utils.kink_by_residuals(train)
+# Adding the kink features
+PointResiduals,Angles = utils.kink(train)
 train['PointResiduals'] = pd.Series(PointResiduals, index=train.index)
+train['Angles'] = pd.Series(PointResiduals, index=train.index)
 
 
 train_part, val_part = train_test_split(train, test_size=0.20, shuffle=True)
