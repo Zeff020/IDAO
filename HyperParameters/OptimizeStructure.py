@@ -1,0 +1,807 @@
+import tensorflow as tf
+import keras
+from keras import backend as K
+import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split
+import pandas as pd
+import utils
+import scoring
+import numpy as np
+
+from skopt import Optimizer
+from skopt.learning.gaussian_process.kernels import Matern, RBF, WhiteKernel
+from skopt.learning import RandomForestRegressor
+from skopt.acquisition import gaussian_ei as acq_func
+from IPython import display
+
+import json
+
+# Setting random number seed
+
+np.random.seed(0)
+
+### Importing and structuring data ###
+
+DATA_PATH = "./data/"
+train, test = utils.load_small_data_csv(DATA_PATH,"train_smaller100.csv.gz","test_smaller100.csv.gz", utils.SIMPLE_FEATURE_COLUMNS)
+#train, test = utils.load_data_csv(DATA_PATH, utils.SIMPLE_FEATURE_COLUMNS)
+
+PointResiduals, Angles, LineSlope, FirstPointResiduals, FourthPointResiduals = utils.kink(train)
+train['PointResiduals'] = pd.Series(PointResiduals, index=train.index)
+train['Angles'] = pd.Series(PointResiduals, index=train.index)
+train['LineSlope'] = pd.Series(PointResiduals, index=train.index)
+train['FirstPointResiduals'] = pd.Series(PointResiduals, index=train.index)
+train['FourthPointResiduals'] = pd.Series(PointResiduals, index=train.index)
+
+
+train_part, val_part = train_test_split(train, test_size=0.20, shuffle=True)
+x_train = train_part.loc[:, utils.SIMPLE_FEATURE_COLUMNS].values
+x_val   =  val_part.loc[:, utils.SIMPLE_FEATURE_COLUMNS].values
+y_train = train_part.loc[:, ["label"]].values
+y_val = val_part.loc[:, ["label"]].values
+#y_train_weight = train_part.loc[:, ["weight"]].values
+
+# turn labels into categorical classes
+classes = [0,1]
+y_train = keras.utils.to_categorical(y_train, num_classes=len(classes))
+y_val   = keras.utils.to_categorical(y_val,   num_classes=len(classes))
+
+### Defining utils ###
+
+# Rectified linear unit
+
+def relu(x):
+  return np.array([ (i>0) * abs(i) for i in x ])
+
+# plotting the bayesian optimizer
+
+def plot_bo(bo, suggestion=None, value=None):
+    a, b = bo.space.bounds[0]
+    
+    # getting the latest model
+    model = bo.models[-1]
+    
+    xs = np.linspace(a, b, num=100)
+    x_model = bo.space.transform(xs.reshape(-1, 1).tolist())
+    
+    mean, std = model.predict(x_model, return_std=True)
+    
+    plt.subplots(nrows=1, ncols=2, figsize=(12, 4))
+    
+    plt.subplot(1, 2, 1)
+    plt.scatter(
+        np.array(bo.Xi)[:, 0],
+        np.array(bo.yi),
+        color='red',
+        label='observations'
+    )
+    if suggestion is not None:
+        plt.scatter([suggestion], value, color='blue', label='suggestion')
+    
+    plt.plot(xs, mean, color='green', label='model')
+    plt.fill_between(xs, mean - 1.96 * std, mean + 1.96 * std, alpha=0.1, color='green')
+    plt.legend()
+    
+    plt.subplot(1, 2, 2)
+    acq = acq_func(x_model, model, np.min(bo.yi))
+    plt.plot(xs, acq, label='Expected Improvement')
+    plt.legend()
+    
+    plt.show()
+
+# Does something
+
+def cum_min(xs):
+    result = np.zeros_like(xs)
+    cmin = xs[0]
+    
+    result[0] = xs[0]
+    
+    for i in range(1, xs.shape[0]):
+        if cmin > xs[i]:
+            cmin = xs[i]
+
+        result[i] = cmin
+    
+    return result
+
+# plots progress of BO over time
+
+def plot_convergence(bo):
+    display.clear_output(wait=True)
+    values = np.array(bo.yi)
+    
+    plt.figure(figsize=(12, 6))
+    plt.plot(cum_min(values), label='minimal discovered')
+    plt.scatter(np.arange(len(bo.yi)), bo.yi, label='observations')
+    plt.xlabel('step', fontsize=14)
+    plt.ylabel('loss', fontsize=14)
+    
+    plt.legend(loc='upper right', fontsize=18)
+    
+    plt.show()
+
+# Prints best parameters
+    
+def print_best(bo):
+    best_result_index = np.argmin(bo.yi)
+    best_parameters = bo.Xi[best_result_index]
+
+    NodesInFirstDense, NodesInSecondDense, DropoutValue, INIT_LEARNINGRATE = best_parameters
+    
+    print(
+        'Best model:\n Nodes in first dense layer= {0} \n Nodes in second dense layer= {1} \n learning rate= {2} \n Dropout value= {3}'.format(
+            int(np.ceil(NodesInFirstDense)),
+            int(np.ceil(NodesInSecondDense)),
+            INIT_LEARNINGRATE,
+            DropoutValue
+        )
+    )
+
+### Target function with as input optimizeable parameters ###
+
+def target_function1(params, X_train=x_train, y_train=y_train, X_score=x_val, y_score=y_val):
+    
+    # Optimized parameters
+    NodesInFirstDense, NodesInSecondDense, INIT_LEARNINGRATE, DropoutValue = params
+    
+    
+    # Making sure that the number of nodes are integers
+    NodesInFirstDense = int(np.ceil(NodesInFirstDense))
+    NodesInSecondDense = int(np.ceil(NodesInSecondDense))
+    
+    # Two parameters not optimized in this case, but can be optimized if needed
+    BATCH_SIZE = 16  # should be a factor of len(x_train) and len(x_val) etc.
+    EPOCHS = 3
+
+    assert len(y_train) == len(x_train), "x_train and y_train not same length!"
+    #assert len(y_train) % BATCH_SIZE == 0, "batch size should be multiple of training size,{0}/{1}".format(len(y_train),BATCH_SIZE)
+
+    from keras.models import Sequential
+    from keras.layers import Dense, Activation, Dropout
+    from keras.layers.normalization import BatchNormalization
+
+    K.clear_session()
+
+    model = Sequential()
+    model.add(Dense(NodesInFirstDense, activation='relu', input_shape=( len( utils.SIMPLE_FEATURE_COLUMNS ), ))) #length = input vars
+    model.add(BatchNormalization())
+    model.add(Dropout(DropoutValue))
+    model.add(Dense(NodesInSecondDense , activation='relu'))
+    model.add(Dense( len(classes) )) # muon and 'other'
+    model.add(Activation("softmax")) # output probabilities
+
+    model.compile(
+        loss="categorical_crossentropy",
+        optimizer=keras.optimizers.adamax(lr=INIT_LEARNINGRATE),
+        metrics=['accuracy'] 
+        )
+
+
+    model.fit(
+        x_train, y_train,
+        batch_size = BATCH_SIZE,
+        epochs = EPOCHS,
+        validation_data = (x_val, y_val),
+        shuffle = True
+        )
+
+    #model.save_model("keras_basic_model.xgb")
+
+
+    # score
+
+    validation_predictions = model.predict_proba(val_part.loc[:, utils.SIMPLE_FEATURE_COLUMNS].values)[:, 1]
+    result = scoring.rejection90(val_part.label.values, validation_predictions, sample_weight=val_part.weight.values)
+    print(result)
+    
+    return 1 - result
+
+def target_function2(params, X_train=x_train, y_train=y_train, X_score=x_val, y_score=y_val):
+    
+    # Optimized parameters
+    NodesInFirstDense, NodesInSecondDense, NodesInThirdDense, INIT_LEARNINGRATE, DropoutValue  = params
+    
+    # Making sure that the number of nodes are integers
+    NodesInFirstDense = int(np.ceil(NodesInFirstDense))
+    NodesInSecondDense = int(np.ceil(NodesInSecondDense))
+    NodesInThirdDense = int(np.ceil(NodesInThirdDense))
+    
+    # Two parameters not optimized in this case, but can be optimized if needed
+    BATCH_SIZE = 16  # should be a factor of len(x_train) and len(x_val) etc.
+    EPOCHS = 3
+
+    assert len(y_train) == len(x_train), "x_train and y_train not same length!"
+    #assert len(y_train) % BATCH_SIZE == 0, "batch size should be multiple of training size,{0}/{1}".format(len(y_train),BATCH_SIZE)
+
+    from keras.models import Sequential
+    from keras.layers import Dense, Activation, Dropout
+    from keras.layers.normalization import BatchNormalization
+
+    K.clear_session()
+
+    model = Sequential()
+    model.add(Dense(NodesInFirstDense, activation='relu', input_shape=( len( utils.SIMPLE_FEATURE_COLUMNS ), ))) #length = input vars
+    model.add(BatchNormalization())
+    model.add(Dropout(DropoutValue))
+    model.add(Dense(NodesInSecondDense , activation='relu'))
+    model.add(Dense(NodesInThirdDense )) # muon and 'other'
+    model.add(Dense( len(classes) )) # muon and 'other'
+    model.add(Activation("softmax")) # output probabilities
+
+    model.compile(
+        loss="categorical_crossentropy",
+        optimizer=keras.optimizers.adamax(lr=INIT_LEARNINGRATE),
+        metrics=['accuracy'] 
+        )
+
+
+    model.fit(
+        x_train, y_train,
+        batch_size = BATCH_SIZE,
+        epochs = EPOCHS,
+        validation_data = (x_val, y_val),
+        shuffle = True
+        )
+
+    #model.save_model("keras_basic_model.xgb")
+
+
+    # score
+
+    validation_predictions = model.predict_proba(val_part.loc[:, utils.SIMPLE_FEATURE_COLUMNS].values)[:, 1]
+    result = scoring.rejection90(val_part.label.values, validation_predictions, sample_weight=val_part.weight.values)
+    print(result)
+    
+    return 1 - result
+
+def target_function3(params, X_train=x_train, y_train=y_train, X_score=x_val, y_score=y_val):
+    
+    # Optimized parameters
+    NodesInFirstDense, NodesInSecondDense, NodesInThirdDense, NodesInFourthDense, INIT_LEARNINGRATE, DropoutValue = params
+    
+    # Making sure that the number of nodes are integers
+    NodesInFirstDense = int(np.ceil(NodesInFirstDense))
+    NodesInSecondDense = int(np.ceil(NodesInSecondDense))
+    NodesInThirdDense = int(np.ceil(NodesInThirdDense))
+    NodesInFourthDense = int(np.ceil(NodesInFourthDense))
+    
+    # Two parameters not optimized in this case, but can be optimized if needed
+    BATCH_SIZE = 16  # should be a factor of len(x_train) and len(x_val) etc.
+    EPOCHS = 3
+
+    assert len(y_train) == len(x_train), "x_train and y_train not same length!"
+    #assert len(y_train) % BATCH_SIZE == 0, "batch size should be multiple of training size,{0}/{1}".format(len(y_train),BATCH_SIZE)
+
+    from keras.models import Sequential
+    from keras.layers import Dense, Activation, Dropout
+    from keras.layers.normalization import BatchNormalization
+
+    K.clear_session()
+
+    model = Sequential()
+    model.add(Dense(NodesInFirstDense, activation='relu', input_shape=( len( utils.SIMPLE_FEATURE_COLUMNS ), ))) #length = input vars
+    model.add(BatchNormalization())
+    model.add(Dense(NodesInSecondDense , activation='relu'))
+    model.add(Dense(NodesInThirdDense )) # muon and 'other'
+    model.add(Dropout(DropoutValue))
+    model.add(Dense(NodesInFourthDense )) # muon and 'other'
+    model.add(Dense( len(classes) ))
+    model.add(Activation("softmax")) # output probabilities
+
+    model.compile(
+        loss="categorical_crossentropy",
+        optimizer=keras.optimizers.adamax(lr=INIT_LEARNINGRATE),
+        metrics=['accuracy'] 
+        )
+
+
+    model.fit(
+        x_train, y_train,
+        batch_size = BATCH_SIZE,
+        epochs = EPOCHS,
+        validation_data = (x_val, y_val),
+        shuffle = True
+        )
+
+    #model.save_model("keras_basic_model.xgb")
+
+
+    # score
+
+    validation_predictions = model.predict_proba(val_part.loc[:, utils.SIMPLE_FEATURE_COLUMNS].values)[:, 1]
+    result = scoring.rejection90(val_part.label.values, validation_predictions, sample_weight=val_part.weight.values)
+    print(result)
+    
+    return 1 - result
+
+def target_function4(params, X_train=x_train, y_train=y_train, X_score=x_val, y_score=y_val):
+    
+    # Optimized parameters
+    NodesInFirstDense, NodesInSecondDense, NodesInThirdDense, NodesInFourthDense,NodesInFifthDense, INIT_LEARNINGRATE, DropoutValue = params
+    
+    # Making sure that the number of nodes are integers
+    NodesInFirstDense = int(np.ceil(NodesInFirstDense))
+    NodesInSecondDense = int(np.ceil(NodesInSecondDense))
+    NodesInThirdDense = int(np.ceil(NodesInThirdDense))
+    NodesInFourthDense = int(np.ceil(NodesInFourthDense))
+    NodesInFifthDense = int(np.ceil(NodesInFifthDense))
+    
+    # Two parameters not optimized in this case, but can be optimized if needed
+    BATCH_SIZE = 16  # should be a factor of len(x_train) and len(x_val) etc.
+    EPOCHS = 3
+
+    assert len(y_train) == len(x_train), "x_train and y_train not same length!"
+    #assert len(y_train) % BATCH_SIZE == 0, "batch size should be multiple of training size,{0}/{1}".format(len(y_train),BATCH_SIZE)
+
+    from keras.models import Sequential
+    from keras.layers import Dense, Activation, Dropout
+    from keras.layers.normalization import BatchNormalization
+
+    K.clear_session()
+
+    model = Sequential()
+    model.add(Dense(NodesInFirstDense, activation='relu', input_shape=( len( utils.SIMPLE_FEATURE_COLUMNS ), ))) #length = input vars
+    model.add(BatchNormalization())
+    model.add(Dense(NodesInSecondDense , activation='relu'))
+    model.add(Dense(NodesInThirdDense )) # muon and 'other'
+    model.add(Dropout(DropoutValue))
+    model.add(Dense(NodesInFourthDense )) # muon and 'other'
+    model.add(Dense(NodesInFifthDense ))
+    model.add(Dense( len(classes) ))
+    model.add(Activation("softmax")) # output probabilities
+
+
+    model.compile(
+        loss="categorical_crossentropy",
+        optimizer=keras.optimizers.adamax(lr=INIT_LEARNINGRATE),
+        metrics=['accuracy'] 
+        )
+
+
+    model.fit(
+        x_train, y_train,
+        batch_size = BATCH_SIZE,
+        epochs = EPOCHS,
+        validation_data = (x_val, y_val),
+        shuffle = True
+        )
+
+    #model.save_model("keras_basic_model.xgb")
+
+
+    # score
+
+    validation_predictions = model.predict_proba(val_part.loc[:, utils.SIMPLE_FEATURE_COLUMNS].values)[:, 1]
+    result = scoring.rejection90(val_part.label.values, validation_predictions, sample_weight=val_part.weight.values)
+    print(result)
+    
+    return 1 - result
+
+def target_function_NoBatch(params, X_train=x_train, y_train=y_train, X_score=x_val, y_score=y_val):
+    
+    # Optimized parameters
+    NodesInFirstDense, NodesInSecondDense, INIT_LEARNINGRATE, DropoutValue = params
+    
+    # Making sure that the number of nodes are integers
+    NodesInFirstDense = int(np.ceil(NodesInFirstDense))
+    NodesInSecondDense = int(np.ceil(NodesInSecondDense))
+    
+    # Two parameters not optimized in this case, but can be optimized if needed
+    BATCH_SIZE = 16  # should be a factor of len(x_train) and len(x_val) etc.
+    EPOCHS = 3
+
+    assert len(y_train) == len(x_train), "x_train and y_train not same length!"
+    #assert len(y_train) % BATCH_SIZE == 0, "batch size should be multiple of training size,{0}/{1}".format(len(y_train),BATCH_SIZE)
+
+    from keras.models import Sequential
+    from keras.layers import Dense, Activation, Dropout
+
+    K.clear_session()
+
+    model = Sequential()
+    model.add(Dense(NodesInFirstDense, activation='relu', input_shape=( len( utils.SIMPLE_FEATURE_COLUMNS ), ))) #length = input vars
+    model.add(Dropout(DropoutValue))
+    model.add(Dense(NodesInSecondDense , activation='relu'))
+    model.add(Dense( len(classes) ))
+    model.add(Activation("softmax")) # output probabilities
+
+    model.compile(
+        loss="categorical_crossentropy",
+        optimizer=keras.optimizers.adamax(lr=INIT_LEARNINGRATE),
+        metrics=['accuracy'] 
+        )
+
+
+    model.fit(
+        x_train, y_train,
+        batch_size = BATCH_SIZE,
+        epochs = EPOCHS,
+        validation_data = (x_val, y_val),
+        shuffle = True
+        )
+
+    #model.save_model("keras_basic_model.xgb")
+
+
+    # score
+
+    validation_predictions = model.predict_proba(val_part.loc[:, utils.SIMPLE_FEATURE_COLUMNS].values)[:, 1]
+    result = scoring.rejection90(val_part.label.values, validation_predictions, sample_weight=val_part.weight.values)
+    print(result)
+    
+    return 1 - result
+
+### Setting dimensions for optimizeable parameters ###
+
+dimensions_4 =[
+    # NodesInFirstDense
+    (4.0, 300.0),
+    
+    # NodesInSecondDense
+    (4.0, 300.0),
+    
+    # LOG_INIT_LEARNINGRATE
+    (1.0e-4, 1.0e-2),
+    
+    # DropoutValue
+    (0.0, 0.1)
+]
+
+dimensions_5 =[
+    # NodesInFirstDense
+    (4.0, 300.0),
+    
+    # NodesInSecondDense
+    (4.0, 300.0),
+    
+    # NodesInThirdDense
+    (4.0, 300.0),
+    
+    # LOG_INIT_LEARNINGRATE
+    (1.0e-4, 1.0e-2),
+    
+    # DropoutValue
+    (0.0, 0.1)
+]
+
+dimensions_6 =[
+    # NodesInFirstDense
+    (4.0, 300.0),
+    
+    # NodesInSecondDense
+    (4.0, 300.0),
+    
+    # NodesInThirdDense
+    (4.0, 300.0),
+    
+    # NodesInFourthDense
+    (4.0, 300.0),
+    
+    # LOG_INIT_LEARNINGRATE
+    (1.0e-4, 1.0e-2),
+    
+    # DropoutValue
+    (0.0, 0.1)
+]
+
+dimensions_7 =[
+    # NodesInFirstDense
+    (4.0, 300.0),
+    
+    # NodesInSecondDense
+    (4.0, 300.0),
+    
+    # NodesInThirdDense
+    (4.0, 300.0),
+    
+    # NodesInFourthDense
+    (4.0, 300.0),
+    
+    # NodesInFifthDense
+    (4.0, 300.0),
+    
+    # LOG_INIT_LEARNINGRATE
+    (1.0e-4, 1.0e-2),
+    
+    # DropoutValue
+    (0.0, 0.1)
+]
+
+OptimalParams1 = ([])
+OptimalParams2 = ([])
+OptimalParams3= ([])
+OptimalParams4= ([])
+OptimalParams_NoBatch = ([])
+
+OptimalScore1 = ([])
+OptimalScore2 = ([])
+OptimalScore3= ([])
+OptimalScore4= ([])
+OptimalScore_NoBatch = ([])
+
+# First network, original network, two dense layers
+for i in range(0,3):
+
+    bo_rf_41 = Optimizer(
+    dimensions=dimensions_4,
+    base_estimator=RandomForestRegressor(
+        n_estimators=100, n_jobs=4, min_variance=1.0e-6
+    ),
+    n_initial_points=10,
+    acq_func='EI',   
+    )
+
+    bo = bo_rf_41
+
+    for j in range(100):
+        x = bo.ask()
+        print(x)
+        f = target_function1(x) # Other inputs are automatically set
+
+        bo.tell(x, f)
+
+        #plot_convergence(bo)
+
+    best_result_index = np.argmin(bo.yi)
+    best_parameters = bo.Xi[best_result_index]
+
+    OptimalParams1 = np.append(OptimalParams1,best_parameters, axis=0)
+    OptimalScore1 = np.append(OptimalScore1,bo.yi[np.argmin(bo.yi)])
+    
+    bo.yi[np.argmin(bo.yi)] = 1
+    
+    best_result_index = np.argmin(bo.yi)
+    best_parameters = bo.Xi[best_result_index]
+    
+    OptimalParams1 = np.append(OptimalParams1,best_parameters, axis=0)
+    OptimalScore1 = np.append(OptimalScore1,bo.yi[np.argmin(bo.yi)])
+    
+    bo.yi[np.argmin(bo.yi)] = 1
+    
+    best_result_index = np.argmin(bo.yi)
+    best_parameters = bo.Xi[best_result_index]
+    
+    OptimalParams1 = np.append(OptimalParams1,best_parameters, axis=0)
+    OptimalScore1 = np.append(OptimalScore1,bo.yi[np.argmin(bo.yi)])
+    
+    i += 1
+    
+# Second network, three dense layers
+for i in range(0,3):
+
+    bo_rf_42 = Optimizer(
+    dimensions=dimensions_5,
+    base_estimator=RandomForestRegressor(
+        n_estimators=100, n_jobs=4, min_variance=1.0e-6
+    ),
+    n_initial_points=10,
+    acq_func='EI',   
+    )
+
+    bo = bo_rf_42
+
+    for j in range(150):
+        x = bo.ask()
+        print(x)
+        f = target_function2(x) # Other inputs are automatically set
+
+        bo.tell(x, f)
+
+        #plot_convergence(bo)
+
+    best_result_index = np.argmin(bo.yi)
+    best_parameters = bo.Xi[best_result_index]
+
+
+    OptimalParams2 = np.append(OptimalParams2, best_parameters, axis=0)
+    OptimalScore2 = np.append(OptimalScore2,bo.yi[np.argmin(bo.yi)])
+    
+    bo.yi[np.argmin(bo.yi)] = 1
+    
+    best_result_index = np.argmin(bo.yi)
+    best_parameters = bo.Xi[best_result_index]
+    
+    OptimalParams2 = np.append(OptimalParams2,best_parameters, axis=0)
+    OptimalScore2 = np.append(OptimalScore2,bo.yi[np.argmin(bo.yi)])
+    
+    bo.yi[np.argmin(bo.yi)] = 1
+    
+    best_result_index = np.argmin(bo.yi)
+    best_parameters = bo.Xi[best_result_index]
+    
+    OptimalParams2 = np.append(OptimalParams2,best_parameters, axis=0)
+    OptimalScore2 = np.append(OptimalScore2,bo.yi[np.argmin(bo.yi)])
+    
+    i += 1
+
+#Third network, four dense layers
+for i in range(0,3):
+
+    bo_rf_43 = Optimizer(
+    dimensions=dimensions_6,
+    base_estimator=RandomForestRegressor(
+        n_estimators=100, n_jobs=4, min_variance=1.0e-6
+    ),
+    n_initial_points=10,
+    acq_func='EI',   
+    )
+
+    bo = bo_rf_43
+
+    for j in range(180):
+        x = bo.ask()
+        print(x)
+        f = target_function3(x) # Other inputs are automatically set
+
+        bo.tell(x, f)
+
+        #plot_convergence(bo)
+
+    best_result_index = np.argmin(bo.yi)
+    best_parameters = bo.Xi[best_result_index]
+
+    OptimalParams3 = np.append(OptimalParams3, best_parameters, axis=0)
+    OptimalScore3 = np.append(OptimalScore3,bo.yi[np.argmin(bo.yi)])
+    
+    bo.yi[np.argmin(bo.yi)] = 1
+    
+    best_result_index = np.argmin(bo.yi)
+    best_parameters = bo.Xi[best_result_index]
+    
+    OptimalParams3 = np.append(OptimalParams3,best_parameters, axis=0)
+    OptimalScore3 = np.append(OptimalScore3,bo.yi[np.argmin(bo.yi)])
+    
+    bo.yi[np.argmin(bo.yi)] = 1
+    
+    best_result_index = np.argmin(bo.yi)
+    best_parameters = bo.Xi[best_result_index]
+    
+    OptimalParams3 = np.append(OptimalParams3,best_parameters, axis=0)
+    OptimalScore3 = np.append(OptimalScore3,bo.yi[np.argmin(bo.yi)])
+    
+    i += 1
+
+# fourth network, five dense layers
+for i in range(0,3):
+
+    bo_rf_44 = Optimizer(
+    dimensions=dimensions_7,
+    base_estimator=RandomForestRegressor(
+        n_estimators=100, n_jobs=4, min_variance=1.0e-6
+    ),
+    n_initial_points=10,
+    acq_func='EI',   
+    )
+
+    bo = bo_rf_44
+
+    for j in range(200):
+        x = bo.ask()
+        print(x)
+        f = target_function4(x) # Other inputs are automatically set
+
+        bo.tell(x, f)
+
+        #plot_convergence(bo)
+
+    best_result_index = np.argmin(bo.yi)
+    best_parameters = bo.Xi[best_result_index]
+
+    OptimalParams4 = np.append(OptimalParams4, best_parameters, axis = 0)
+    OptimalScore4 = np.append(OptimalScore4,bo.yi[np.argmin(bo.yi)])
+    
+    bo.yi[np.argmin(bo.yi)] = 1
+    
+    best_result_index = np.argmin(bo.yi)
+    best_parameters = bo.Xi[best_result_index]
+    
+    OptimalParams4 = np.append(OptimalParams4,best_parameters, axis=0)
+    OptimalScore4 = np.append(OptimalScore4,bo.yi[np.argmin(bo.yi)])
+    
+    bo.yi[np.argmin(bo.yi)] = 1
+    
+    best_result_index = np.argmin(bo.yi)
+    best_parameters = bo.Xi[best_result_index]
+    
+    OptimalParams4 = np.append(OptimalParams4,best_parameters, axis=0)
+    OptimalScore4 = np.append(OptimalScore4,bo.yi[np.argmin(bo.yi)])
+    
+    i += 1
+
+# fifth network, No batch normalization
+for i in range(0,3):        
+
+    bo_rf_41 = Optimizer(
+    dimensions=dimensions_4,
+    base_estimator=RandomForestRegressor(
+        n_estimators=100, n_jobs=4, min_variance=1.0e-6),
+    n_initial_points=10,
+    acq_func='EI',   
+    )
+
+    bo = bo_rf_41
+
+    for j in range(100):
+        x = bo.ask()
+        print(x)
+        f = target_function_NoBatch(x) # Other inputs are automatically set
+
+        bo.tell(x, f)
+
+        #plot_convergence(bo)
+
+    best_result_index = np.argmin(bo.yi)
+    best_parameters = bo.Xi[best_result_index]
+
+    OptimalParams_NoBatch = np.append(OptimalParams_NoBatch, best_parameters, axis=0)
+    OptimalScore_NoBatch = np.append(OptimalScore_NoBatch,bo.yi[np.argmin(bo.yi)])
+    
+    bo.yi[np.argmin(bo.yi)] = 1
+    
+    best_result_index = np.argmin(bo.yi)
+    best_parameters = bo.Xi[best_result_index]
+    
+    OptimalParams_NoBatch = np.append(OptimalParams_NoBatch, best_parameters, axis=0)
+    OptimalScore_NoBatch = np.append(OptimalScore_NoBatch,bo.yi[np.argmin(bo.yi)])
+    
+    bo.yi[np.argmin(bo.yi)] = 1
+    
+    best_result_index = np.argmin(bo.yi)
+    best_parameters = bo.Xi[best_result_index]
+    
+    OptimalParams_NoBatch = np.append(OptimalParams_NoBatch,best_parameters, axis=0)
+    OptimalScore_NoBatch = np.append(OptimalScore_NoBatch,bo.yi[np.argmin(bo.yi)])
+    
+    i += 1
+
+
+ResultsDict = {}
+ResultsDict = {
+    
+                'First Network' : 
+               
+               { 
+                 1 : {'Optimal Parameters' : OptimalParams1[0:12].tolist(), 'Optimal Score' : OptimalScore1[0:3].tolist()}, 
+                 2 : {'Optimal Parameters' : OptimalParams1[12:24].tolist(), 'Optimal Score' : OptimalScore1[3:6].tolist()},
+                 3 : {'Optimal Parameters' : OptimalParams1[24:36].tolist(), 'Optimal Score' : OptimalScore1[6:9].tolist()}
+               },
+               
+                'Second Network': 
+               
+               {
+                 1 : {'Optimal Parameters' : OptimalParams2[0:15].tolist(), 'Optimal Score' : OptimalScore2[0:3].tolist()}, 
+                 2 : {'Optimal Parameters' : OptimalParams2[15:30].tolist(), 'Optimal Score' : OptimalScore2[3:6].tolist()},
+                 3 : {'Optimal Parameters' : OptimalParams2[30:45].tolist(), 'Optimal Score' : OptimalScore2[6:9].tolist()}
+               },
+    
+                'Third Network':
+    
+               {
+                 1 : {'Optimal Parameters' : OptimalParams3[0:18].tolist(), 'Optimal Score' : OptimalScore3[0:3].tolist()}, 
+                 2 : {'Optimal Parameters' : OptimalParams3[18:36].tolist(), 'Optimal Score' : OptimalScore3[3:6].tolist()},
+                 3 : {'Optimal Parameters' : OptimalParams3[36:54].tolist(), 'Optimal Score' : OptimalScore3[6:9].tolist()}
+               },
+                
+                'Fourth Network':
+    
+               {
+                 1 : {'Optimal Parameters' : OptimalParams4[0:21].tolist(), 'Optimal Score' : OptimalScore4[0:3].tolist()}, 
+                 2 : {'Optimal Parameters' : OptimalParams4[21:42].tolist(), 'Optimal Score' : OptimalScore4[3:6].tolist()},
+                 3 : {'Optimal Parameters' : OptimalParams4[42:61].tolist(), 'Optimal Score' : OptimalScore4[6:9].tolist()}
+               },
+    
+                'No Batch Network':
+    
+               {
+                 1 : {'Optimal Parameters' : OptimalParams_NoBatch[0:12].tolist(), 'Optimal Score' : OptimalScore_NoBatch[0:3].tolist()}, 
+                 2 : {'Optimal Parameters' : OptimalParams_NoBatch[12:24].tolist(), 'Optimal Score' : OptimalScore_NoBatch[3:6].tolist()},
+                 3 : {'Optimal Parameters' : OptimalParams_NoBatch[24:36].tolist(), 'Optimal Score' : OptimalScore_NoBatch[6:9].tolist()}
+               }
+    
+               
+}
+
+
+with open('data.json', 'w') as fp:
+    json.dump(ResultsDict, fp, indent = 4)

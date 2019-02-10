@@ -1,0 +1,8 @@
+keras
+tensorflow
+matplotlib
+sklearn
+pandas
+numpy
+scikit-optimize
+IPython
