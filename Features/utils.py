@@ -76,18 +76,29 @@ def make_smaller(train,test,smaller_by):
 
 # Returns array of summed residuals per particle (i-th entry in array correlates to i-th particle in dataframe). Currently only does for train.
 def kink(DataSet):
+    
     Location_info = DataSet.loc[: , "MatchedHit_X[0]":"MatchedHit_Z[3]"]
 
     PointResiduals = np.array([])
     Angles = np.array([])
-    LineSlope = np.array([])
+    LineSlope1 = np.array([])
+    LineSlope2 = np.array([])
+    LineSlope3 = np.array([])
     FourthPointResiduals = np.array([])
     FirstPointResiduals = np.array([])
+    Shape = DataSet.shape[0]
 
     for i in range(0,DataSet.shape[0]):
-    
+        
         ResidualsSize = 0
-    
+
+        if i % 10000 == 0:
+            print(" Evaluated " + str(i) + " features out of a total of " + str(Shape))
+
+                
+            
+
+        LineSlope = np.array([])
         # Extracting info on the i-th particle's coordinates
         Particle_Path_Points = Location_info.loc[i,:]
         X = Particle_Path_Points.loc['MatchedHit_X[0]':'MatchedHit_X[3]'].values
@@ -106,7 +117,11 @@ def kink(DataSet):
     
         # Best fit line with length between -2500 and 2500 with 2 datapoints (it's a straight line so that's enough)
         linepts = vv[0] * np.mgrid[-2500:2500:2j][:, np.newaxis]
-        LineSlope = np.append(LineSlope, vv[0])
+        LineSlope = vv[0]
+        LineSlope1 = np.append(LineSlope1, LineSlope[0])
+        LineSlope2 = np.append(LineSlope2, LineSlope[1])
+        LineSlope3 = np.append(LineSlope3, LineSlope[2])
+    
 
         # Shift by the mean to get the line in the right place (centered)
         linepts += datamean
@@ -160,5 +175,5 @@ def kink(DataSet):
         ResidualSize = abs(norm(data[0] - intersect[0]))
         
         FirstPointResiduals = np.append(FirstPointResiduals, ResidualSize)
-    
-    return PointResiduals, Angles, LineSlope, FirstPointResiduals, FourthPointResiduals
+
+    return PointResiduals, Angles, LineSlope1, LineSlope2, LineSlope3, FirstPointResiduals, FourthPointResiduals
